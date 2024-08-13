@@ -165,9 +165,6 @@ struct llama_sampling_context {
     // parameters that will be used for sampling
     gpt_sampling_params params;
 
-    // mirostat sampler state
-    float mirostat_mu;
-
     llama_sampling * smpl;
 
     ring_buffer<llama_token>      prev;

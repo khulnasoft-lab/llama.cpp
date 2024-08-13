@@ -29,6 +29,7 @@ struct llama_sampling_context * llama_sampling_init(const struct gpt_sampling_pa
         lp.mirostat          = params.mirostat;
         lp.mirostat_tau      = params.mirostat_tau;
         lp.mirostat_eta      = params.mirostat_eta;
+        lp.cfg_scale         = params.cfg_scale;
         lp.penalize_nl       = params.penalize_nl;
         lp.ignore_eos        = params.ignore_eos;
 
@@ -36,7 +37,6 @@ struct llama_sampling_context * llama_sampling_init(const struct gpt_sampling_pa
 
         llama_sampling_set_rng_seed  (result->smpl, params.seed);
         llama_sampling_set_grammar   (result->smpl, params.grammar.c_str(), "root");
-        llama_sampling_set_cfg       (result->smpl, params.cfg_negative_prompt.c_str(), params.cfg_scale);
         llama_sampling_set_logit_bias(result->smpl, params.logit_bias.size(), params.logit_bias.data());
     }
 
@@ -202,38 +202,21 @@ std::vector<llama_sampler_type> llama_sampling_types_from_chars(const std::strin
 // no reasons to expose this function in header
 static void sampler_queue(
           struct llama_sampling_context * ctx_sampling,
-                 llama_token_data_array & cur_p,
-                                 size_t   min_keep) {
+                 llama_token_data_array & cur_p) {
     llama_sampling * smpl = ctx_sampling->smpl;
 
     const gpt_sampling_params & params = ctx_sampling->params;
 
-    const float         temp              = params.temp;
-    const float         dynatemp_range    = params.dynatemp_range;
-    const float         dynatemp_exponent = params.dynatemp_exponent;
-    const int32_t       top_k             = params.top_k;
-    const float         top_p             = params.top_p;
-    const float         min_p             = params.min_p;
-    const float         tfs_z             = params.tfs_z;
-    const float         typical_p         = params.typical_p;
     const std::vector<llama_sampler_type> & samplers_sequence = params.samplers_sequence;
 
     for (auto sampler_type : samplers_sequence) {
         switch (sampler_type) {
-            case llama_sampler_type::TOP_K    : llama_sampling_top_k    (smpl, &cur_p, top_k,     min_keep); break;
-            case llama_sampler_type::TFS_Z    : llama_sampling_tail_free(smpl, &cur_p, tfs_z,     min_keep); break;
-            case llama_sampler_type::TYPICAL_P: llama_sampling_typical  (smpl, &cur_p, typical_p, min_keep); break;
-            case llama_sampler_type::TOP_P    : llama_sampling_top_p    (smpl, &cur_p, top_p,     min_keep); break;
-            case llama_sampler_type::MIN_P    : llama_sampling_min_p    (smpl, &cur_p, min_p,     min_keep); break;
-            case llama_sampler_type::TEMPERATURE:
-                if (dynatemp_range > 0) {
-                    float dynatemp_min = std::max(0.0f, temp - dynatemp_range);
-                    float dynatemp_max = std::max(0.0f, temp + dynatemp_range);
-                    llama_sampling_entropy(smpl, &cur_p, dynatemp_min, dynatemp_max, dynatemp_exponent);
-                } else {
-                    llama_sampling_temp(smpl, &cur_p, temp);
-                }
-                break;
+            case llama_sampler_type::TOP_K:       llama_sampling_top_k    (smpl, &cur_p); break;
+            case llama_sampler_type::TFS_Z:       llama_sampling_tail_free(smpl, &cur_p); break;
+            case llama_sampler_type::TYPICAL_P:   llama_sampling_typical  (smpl, &cur_p); break;
+            case llama_sampler_type::TOP_P:       llama_sampling_top_p    (smpl, &cur_p); break;
+            case llama_sampler_type::MIN_P:       llama_sampling_min_p    (smpl, &cur_p); break;
+            case llama_sampler_type::TEMPERATURE: llama_sampling_temp     (smpl, &cur_p); break;
             default : break;
         }
     }
@@ -269,18 +252,11 @@ static llama_token llama_sampling_sample_impl(
         // greedy sampling, no probs
         id = llama_sampling_sample_greedy(smpl, &cur_p);
     } else {
-        if (mirostat == 1) {
-            const int mirostat_m = 100;
-            llama_sampling_temp(smpl, &cur_p, temp);
-            id = llama_sampling_sample_mirostat(smpl, &cur_p, mirostat_tau, mirostat_eta, mirostat_m, &ctx_sampling->mirostat_mu);
-        } else if (mirostat == 2) {
-            llama_sampling_temp(smpl, &cur_p, temp);
-            id = llama_sampling_sample_mirostat_v2(smpl, &cur_p, mirostat_tau, mirostat_eta, &ctx_sampling->mirostat_mu);
+        if (mirostat != 0) {
+            llama_sampling_temp(smpl, &cur_p);
+            id = llama_sampling_sample_mirostat(smpl, &cur_p);
         } else {
-            // temperature sampling
-            size_t min_keep = std::max(1, params.min_keep);
-
-            sampler_queue(ctx_sampling, cur_p, min_keep);
+            sampler_queue(ctx_sampling, cur_p);
 
             id = llama_sampling_sample(smpl, &cur_p);
 
@@ -372,7 +348,7 @@ static llama_token_data_array llama_sampling_prepare_impl(
 
     if (ctx_cfg) {
         float * logits_guidance = llama_get_logits_ith(ctx_cfg, idx);
-        llama_sampling_cfg(smpl, logits, logits_guidance, params.cfg_scale);
+        llama_sampling_cfg(smpl, logits, logits_guidance);
     }
 
     cur.resize(n_vocab);
